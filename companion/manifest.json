@@ -1,0 +1,27 @@
+{
+	"$schema": "../node_modules/@companion-module/base/assets/manifest.schema.json",
+	"type": "connection",
+	"id": "kiloview-cubex1",
+	"name": "Kiloview CUBE X1",
+	"shortname": "CUBE X1",
+	"description": "Module to control the Kiloview CUBE X1 NDI High Bandwidth + NDI|HX Distribution System (matrix routing, playlists, output locking and templates)",
+	"version": "1.0.0",
+	"license": "MIT",
+	"repository": "git+https://github.com/bitfocus/companion-module-kiloview-cubex1.git",
+	"bugs": "https://github.com/bitfocus/companion-module-kiloview-cubex1/issues",
+	"maintainers": [
+		{
+			"name": "Bitfocus Companion Community"
+		}
+	],
+	"runtime": {
+		"type": "node22",
+		"api": "nodejs-ipc",
+		"apiVersion": "0.0.0",
+		"entrypoint": "../src/main.js"
+	},
+	"legacyIds": [],
+	"manufacturer": "Kiloview",
+	"products": ["CUBE X1"],
+	"keywords": ["Kiloview", "CUBE", "X1", "NDI", "Matrix", "Router", "Video", "Distribution"]
+}
