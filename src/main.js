@@ -1,5 +1,5 @@
 // Kiloview CUBE X1
-const { InstanceBase } = require('@companion-module/base')
+const { InstanceBase, InstanceStatus } = require('@companion-module/base')
 const upgrades = require('./upgrades')
 
 const config = require('./config')
@@ -33,14 +33,18 @@ class KiloviewX1Instance extends InstanceBase {
 	}
 
 	async init(config) {
-		this.configUpdated(config)
+		await this.configUpdated(config)
 	}
 
 	async destroy() {
 		try {
+			this._destroyed = true
+			this.CONNECTION_GENERATION++
 			this.stopIntervals()
-			this.disposeDevice(this.DEVICE)
+			await this.INIT_CONNECTION_PROMISE
+			await this.disposeDevice(this.DEVICE)
 			this.DEVICE = null
+			this.updateStatus(InstanceStatus.Disconnected)
 		} catch (error) {
 			this.log('error', 'destroy error: ' + error)
 		}
@@ -54,7 +58,7 @@ class KiloviewX1Instance extends InstanceBase {
 		this.initVariables()
 		this.initPresets()
 
-		this.initConnection()
+		await this.initConnection()
 	}
 }
 

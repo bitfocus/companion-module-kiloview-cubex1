@@ -41,4 +41,8 @@ module.exports = {
 	RECONNECT_INTERVAL: null,
 	TOKEN_INTERVAL: null,
 	STATE_CHECK_IN_FLIGHT: false,
+	SYSTEM_INFO_CHECK_IN_FLIGHT: false,
+	CONNECTION_GENERATION: 0,
+	INIT_CONNECTION_PROMISE: null,
+	_destroyed: false,
 }

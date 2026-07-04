@@ -36,6 +36,24 @@ class KiloviewCubeX1 {
 
 		this.token = ''
 		this.authorized = false
+		this._closed = false
+		this._activeRequests = new Set()
+		this._authMutex = null
+	}
+
+	async _withAuthMutex(fn) {
+		const previous = this._authMutex || Promise.resolve()
+		let release
+		const gate = new Promise((resolve) => {
+			release = resolve
+		})
+		this._authMutex = gate
+		await previous
+		try {
+			return await fn()
+		} finally {
+			release()
+		}
 	}
 
 	log(level, message) {
@@ -43,6 +61,13 @@ class KiloviewCubeX1 {
 	}
 
 	_request(method, path, data, contentType = 'application/json') {
+		if (this._closed) {
+			const error = new Error('Client closed')
+			error.name = 'KiloviewX1Error'
+			error.unreachable = true
+			return Promise.reject(error)
+		}
+
 		return new Promise((resolve, reject) => {
 			const isHttps = this.connection_info.protocol === 'https'
 			const urlObj = new URL(`${this.baseURL}${path}`)
@@ -86,10 +111,22 @@ class KiloviewCubeX1 {
 
 			const req = (isHttps ? https : http).request(options, (res) => {
 				let resBody = ''
+				const finish = () => {
+					this._activeRequests.delete(req)
+				}
+
 				res.on('data', (chunk) => {
 					resBody += chunk
 				})
+				res.on('error', (err) => {
+					finish()
+					const error = new Error(err.message)
+					error.name = 'KiloviewX1Error'
+					error.unreachable = true
+					reject(error)
+				})
 				res.on('end', () => {
+					finish()
 					try {
 						const parsed = JSON.parse(resBody)
 						if (typeof parsed === 'object' && parsed !== null) {
@@ -102,15 +139,22 @@ class KiloviewCubeX1 {
 				})
 			})
 
+			this._activeRequests.add(req)
+
 			req.on('timeout', () => {
 				req.destroy(new Error('Request timed out'))
 			})
 
 			req.on('error', (err) => {
+				this._activeRequests.delete(req)
 				const error = new Error(err.message)
 				error.name = 'KiloviewX1Error'
 				error.unreachable = true
 				reject(error)
+			})
+
+			req.on('close', () => {
+				this._activeRequests.delete(req)
 			})
 
 			if (body !== undefined) {
@@ -147,7 +191,15 @@ class KiloviewCubeX1 {
 		return false
 	}
 
-	async login() {
+	_throwApiError(result) {
+		const error = this._apiError(result)
+		if (this._isAuthFailure(result)) {
+			error.authFailure = true
+		}
+		throw error
+	}
+
+	async _loginImpl() {
 		const { username, password } = this.connection_info
 
 		const params = {
@@ -175,12 +227,16 @@ class KiloviewCubeX1 {
 		throw error
 	}
 
+	async login() {
+		return this._withAuthMutex(() => this._loginImpl())
+	}
+
 	async logout() {
 		if (!this.authorized) {
 			return
 		}
 		try {
-			await this._request('POST', '/user/logout', '')
+			await this._request('POST', '/user/logout')
 		} finally {
 			this.token = ''
 			this.authorized = false
@@ -188,6 +244,11 @@ class KiloviewCubeX1 {
 	}
 
 	close() {
+		this._closed = true
+		for (const req of this._activeRequests) {
+			req.destroy()
+		}
+		this._activeRequests.clear()
 		this.httpAgent.destroy()
 		this.httpsAgent.destroy()
 	}
@@ -196,15 +257,17 @@ class KiloviewCubeX1 {
 	 * Refresh the bearer token (valid ~5 minutes) without a full re-login.
 	 */
 	async refreshToken() {
-		const result = await this._request('GET', '/user/token/get')
+		return this._withAuthMutex(async () => {
+			const result = await this._request('GET', '/user/token/get')
 
-		if (result?.result === 'ok' && result?.msg?.access_token) {
-			this.token = result.msg.access_token
-			return true
-		}
+			if (result?.result === 'ok' && result?.msg?.access_token) {
+				this.token = result.msg.access_token
+				return true
+			}
 
-		// Fall back to a full login if the refresh failed (token already expired)
-		return await this.login()
+			// Fall back to a full login if the refresh failed (token already expired)
+			return await this._loginImpl()
+		})
 	}
 
 	async authGet(path, params = {}) {
@@ -218,12 +281,12 @@ class KiloviewCubeX1 {
 		let result = await this._request('GET', fullPath)
 
 		if (this._isAuthFailure(result)) {
-			await this.login()
+			await this._withAuthMutex(() => this._loginImpl())
 			result = await this._request('GET', fullPath)
 		}
 
 		if (result?.result === 'error') {
-			throw this._apiError(result)
+			this._throwApiError(result)
 		}
 
 		return result
@@ -237,12 +300,12 @@ class KiloviewCubeX1 {
 		let result = await this._request('POST', path, data)
 
 		if (this._isAuthFailure(result)) {
-			await this.login()
+			await this._withAuthMutex(() => this._loginImpl())
 			result = await this._request('POST', path, data)
 		}
 
 		if (result?.result === 'error') {
-			throw this._apiError(result)
+			this._throwApiError(result)
 		}
 
 		return result
@@ -270,11 +333,11 @@ class KiloviewCubeX1 {
 	}
 
 	async reboot() {
-		return await this.authPost('/server/reboot', '')
+		return await this.authPost('/server/reboot', {})
 	}
 
 	async restoreFactorySettings() {
-		return await this.authPost('/server/restore', '')
+		return await this.authPost('/server/restore', {})
 	}
 
 	// ---------------------------------------------------------------------

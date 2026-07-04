@@ -6,15 +6,18 @@ module.exports = {
 		const inputChoicesWithNone = [{ id: 'none', label: '- None (Disconnect) -' }, ...self.CHOICES_INPUTS]
 
 		const runAction = async (description, fn) => {
+			if (!self.DEVICE) {
+				self.log('error', `Action "${description}" skipped: not connected to device.`)
+				return
+			}
+
 			try {
 				await fn()
 				// Refresh state right away so feedbacks/variables update quickly
 				await self.checkState()
 			} catch (error) {
 				self.log('error', `Error in action "${description}": ${error.message}`)
-				if (error.unreachable === true) {
-					self.handleConnectionFailure(error, `Action "${description}" failed`)
-				}
+				await self.handleRequestError(error, `Action "${description}" failed`)
 			}
 		}
 
@@ -430,11 +433,17 @@ module.exports = {
 			name: 'System: Refresh Device Status',
 			options: [],
 			callback: async function () {
+				if (!self.DEVICE) {
+					self.log('error', 'Refresh skipped: not connected to device.')
+					return
+				}
+
 				try {
 					await self.checkSystemInfo()
 					await self.checkState()
 				} catch (error) {
 					self.log('error', 'Error refreshing status: ' + error.message)
+					await self.handleRequestError(error, 'Error refreshing status')
 				}
 			},
 		}
@@ -443,11 +452,17 @@ module.exports = {
 			name: 'System: Reboot Device',
 			options: [],
 			callback: async function () {
+				if (!self.DEVICE) {
+					self.log('error', 'Reboot skipped: not connected to device.')
+					return
+				}
+
 				try {
 					await self.DEVICE.reboot()
 					self.log('info', 'Reboot command sent. Device will restart.')
 				} catch (error) {
 					self.log('error', 'Error rebooting device: ' + error.message)
+					await self.handleRequestError(error, 'Error rebooting device')
 				}
 			},
 		}

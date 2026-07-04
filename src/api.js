@@ -5,15 +5,25 @@ const KiloviewCubeX1 = require('./cubex1')
 module.exports = {
 	disposeDevice: function (device) {
 		if (!device) {
-			return
+			return Promise.resolve()
 		}
 
-		device
+		return device
 			.logout()
 			.catch(() => {})
 			.finally(() => {
 				device.close()
 			})
+	},
+
+	isConnectionCurrent: function (generation, device) {
+		return this.CONNECTION_GENERATION === generation && this.DEVICE === device
+	},
+
+	disposeCurrentDevice: function () {
+		const device = this.DEVICE
+		this.DEVICE = null
+		return this.disposeDevice(device)
 	},
 
 	parsePollingRate: function (value, min, defaultValue) {
@@ -28,10 +38,44 @@ module.exports = {
 	handleConnectionFailure: function (error, context) {
 		let self = this
 
+		if (self._destroyed) {
+			return
+		}
+
 		self.log('error', `${context}: ${error.message}`)
 		self.updateStatus(InstanceStatus.ConnectionFailure)
 		self.stopIntervals()
 		self.startReconnectInterval()
+	},
+
+	handleAuthFailure: function (error, context) {
+		let self = this
+
+		if (self._destroyed) {
+			return Promise.resolve()
+		}
+
+		self.log('error', `${context}: ${error.message}`)
+		self.updateStatus(InstanceStatus.AuthenticationFailure, 'Authentication failed. Check credentials.')
+		self.stopIntervals()
+		return self.disposeCurrentDevice()
+	},
+
+	handleRequestError: function (error, context) {
+		if (this._destroyed) {
+			return Promise.resolve()
+		}
+
+		if (error.authFailure === true) {
+			return this.handleAuthFailure(error, context)
+		}
+
+		if (error.unreachable === true) {
+			this.handleConnectionFailure(error, context)
+			return Promise.resolve()
+		}
+
+		return Promise.resolve()
 	},
 
 	stopIntervals: function () {
@@ -51,17 +95,33 @@ module.exports = {
 	async initConnection() {
 		let self = this
 
-		self.stopIntervals()
+		const run = async () => {
+			if (self._destroyed) {
+				return
+			}
 
-		const previousDevice = self.DEVICE
-		self.DEVICE = null
-		self.disposeDevice(previousDevice)
+			self.stopIntervals()
 
-		if (self.config.host && self.config.host !== '') {
+			self.CONNECTION_GENERATION++
+			const generation = self.CONNECTION_GENERATION
+
+			const previousDevice = self.DEVICE
+			self.DEVICE = null
+			await self.disposeDevice(previousDevice)
+
+			if (!self.config.host || self.config.host === '') {
+				self.updateStatus(InstanceStatus.Disconnected, 'No host configured')
+				return
+			}
+
+			if (!self.isConnectionCurrent(generation, null)) {
+				return
+			}
+
 			self.updateStatus(InstanceStatus.Connecting)
 			self.log('info', `Opening connection to ${self.config.host}`)
 
-			self.DEVICE = new KiloviewCubeX1(
+			const device = new KiloviewCubeX1(
 				self,
 				self.config.host,
 				self.config.username,
@@ -69,27 +129,47 @@ module.exports = {
 				self.config.protocol,
 				self.config.port,
 			)
+			self.DEVICE = device
 
 			try {
 				self.log('info', 'Attempting to log in...')
-				await self.DEVICE.login()
+				await device.login()
 			} catch (error) {
+				if (!self.isConnectionCurrent(generation, device)) {
+					return
+				}
+
+				self.DEVICE = null
+				await self.disposeDevice(device)
+
 				if (error.authFailure === true) {
 					self.log('error', 'Login failed. Check your username and password and try again.')
-					self.updateStatus(InstanceStatus.ConnectionFailure, 'Login Failed. See log.')
-				} else {
-					self.log('error', 'Could not reach device: ' + error.message + '. Retrying in 30 seconds.')
-					self.updateStatus(InstanceStatus.ConnectionFailure)
-					self.startReconnectInterval()
+					self.updateStatus(InstanceStatus.AuthenticationFailure, 'Login failed. See log.')
+					return
 				}
+
+				self.log('error', 'Could not reach device: ' + error.message + '. Retrying in 30 seconds.')
+				self.updateStatus(InstanceStatus.ConnectionFailure)
+				self.startReconnectInterval()
+				return
+			}
+
+			if (!self.isConnectionCurrent(generation, device)) {
 				return
 			}
 
 			self.updateStatus(InstanceStatus.Ok)
 			self.log('info', `Connected to CUBE X1 as user: ${self.config.username}`)
 
-			await self.checkSystemInfo()
-			await self.checkState()
+			await self.checkSystemInfo(generation, device)
+			if (!self.isConnectionCurrent(generation, device)) {
+				return
+			}
+
+			await self.checkState(generation, device)
+			if (!self.isConnectionCurrent(generation, device)) {
+				return
+			}
 
 			self.initActions()
 			self.initFeedbacks()
@@ -99,12 +179,26 @@ module.exports = {
 			self.checkAllFeedbacks()
 			self.checkVariables()
 
+			if (!self.isConnectionCurrent(generation, device)) {
+				return
+			}
+
 			self.startIntervals()
 		}
+
+		self.INIT_CONNECTION_PROMISE = (self.INIT_CONNECTION_PROMISE || Promise.resolve()).then(run).catch((error) => {
+			self.log('error', 'initConnection error: ' + error.message)
+		})
+
+		return self.INIT_CONNECTION_PROMISE
 	},
 
 	startReconnectInterval: function () {
 		let self = this
+
+		if (self._destroyed || !self.config.host || self.config.host === '') {
+			return
+		}
 
 		self.updateStatus(InstanceStatus.ConnectionFailure, 'Reconnecting')
 
@@ -115,7 +209,13 @@ module.exports = {
 
 		self.log('info', 'Attempting to reconnect in 30 seconds...')
 
-		self.RECONNECT_INTERVAL = setTimeout(self.initConnection.bind(self), self.RECONNECT_TIME)
+		self.RECONNECT_INTERVAL = setTimeout(() => {
+			if (self._destroyed) {
+				return
+			}
+
+			self.initConnection().catch(() => {})
+		}, self.RECONNECT_TIME)
 	},
 
 	startIntervals: function () {
@@ -123,18 +223,19 @@ module.exports = {
 
 		// Refresh the session token regularly; it is only valid for ~5 minutes
 		self.TOKEN_INTERVAL = setInterval(async () => {
-			if (!self.DEVICE) {
+			const device = self.DEVICE
+			if (!device) {
 				return
 			}
 
 			try {
-				await self.DEVICE.refreshToken()
+				await device.refreshToken()
 				if (self.config.verbose) {
 					self.log('debug', 'Session token refreshed.')
 				}
 			} catch (error) {
 				if (error.unreachable === true || error.authFailure === true) {
-					self.handleConnectionFailure(error, 'Session refresh failed')
+					await self.handleRequestError(error, 'Session refresh failed')
 					return
 				}
 
@@ -164,18 +265,27 @@ module.exports = {
 	/**
 	 * Poll panel / routing state. This is the main poll loop.
 	 */
-	async checkState() {
+	async checkState(generation, device) {
 		let self = this
 
-		if (!self.DEVICE || self.STATE_CHECK_IN_FLIGHT) {
+		if (generation === undefined) {
+			generation = self.CONNECTION_GENERATION
+		}
+		if (device === undefined) {
+			device = self.DEVICE
+		}
+
+		if (!device || !self.isConnectionCurrent(generation, device) || self.STATE_CHECK_IN_FLIGHT) {
 			return
 		}
 
 		self.STATE_CHECK_IN_FLIGHT = true
 
 		try {
-			// Determine the panel to use (the CUBE X1 exposes one panel, typically "default")
-			const panels = await self.DEVICE.queryPanel()
+			const panels = await device.queryPanel()
+			if (!self.isConnectionCurrent(generation, device)) {
+				return
+			}
 
 			if (panels?.msg instanceof Array && panels.msg.length > 0) {
 				self.STATE.panels = panels.msg
@@ -188,7 +298,10 @@ module.exports = {
 				return
 			}
 
-			const detail = await self.DEVICE.queryPanelDetail(self.STATE.panel_id)
+			const detail = await device.queryPanelDetail(self.STATE.panel_id)
+			if (!self.isConnectionCurrent(generation, device)) {
+				return
+			}
 
 			if (detail?.msg) {
 				self.STATE.panel_detail = detail.msg
@@ -200,16 +313,18 @@ module.exports = {
 
 			self.updateStatus(InstanceStatus.Ok)
 		} catch (error) {
-			if (error.unreachable === true) {
-				self.handleConnectionFailure(error, 'Error getting panel state')
+			if (error.unreachable === true || error.authFailure === true) {
+				await self.handleRequestError(error, 'Error getting panel state')
 				return
 			}
 
-			if (self.config.verbose) {
-				self.log('debug', 'Error getting panel state: ' + error.message)
-			}
+			self.log('error', 'Error getting panel state: ' + error.message)
 		} finally {
 			self.STATE_CHECK_IN_FLIGHT = false
+		}
+
+		if (!self.isConnectionCurrent(generation, device)) {
+			return
 		}
 
 		self.rebuildChoices()
@@ -221,36 +336,57 @@ module.exports = {
 	/**
 	 * Poll slow-changing data (system info, version).
 	 */
-	async checkSystemInfo() {
+	async checkSystemInfo(generation, device) {
 		let self = this
 
-		if (!self.DEVICE) {
+		if (generation === undefined) {
+			generation = self.CONNECTION_GENERATION
+		}
+		if (device === undefined) {
+			device = self.DEVICE
+		}
+
+		if (!device || !self.isConnectionCurrent(generation, device) || self.SYSTEM_INFO_CHECK_IN_FLIGHT) {
 			return
 		}
 
-		try {
-			const info = await self.DEVICE.getSystemInfo()
-			self.STATE.system_info = info?.msg || null
-		} catch (error) {
-			if (error.unreachable === true) {
-				self.handleConnectionFailure(error, 'Error getting system info')
-				return
-			}
-
-			self.log('error', 'Error getting system info: ' + error.message)
-		}
+		self.SYSTEM_INFO_CHECK_IN_FLIGHT = true
 
 		try {
-			const version = await self.DEVICE.getVersion()
-			self.STATE.sn = version?.msg?.sn || ''
-			self.STATE.version = version?.msg?.version || ''
-		} catch (error) {
-			if (error.unreachable === true) {
-				self.handleConnectionFailure(error, 'Error getting version')
-				return
+			try {
+				const info = await device.getSystemInfo()
+				if (!self.isConnectionCurrent(generation, device)) {
+					return
+				}
+
+				self.STATE.system_info = info?.msg || null
+			} catch (error) {
+				if (error.unreachable === true || error.authFailure === true) {
+					await self.handleRequestError(error, 'Error getting system info')
+					return
+				}
+
+				self.log('error', 'Error getting system info: ' + error.message)
 			}
 
-			self.log('error', 'Error getting version: ' + error.message)
+			try {
+				const version = await device.getVersion()
+				if (!self.isConnectionCurrent(generation, device)) {
+					return
+				}
+
+				self.STATE.sn = version?.msg?.sn || ''
+				self.STATE.version = version?.msg?.version || ''
+			} catch (error) {
+				if (error.unreachable === true || error.authFailure === true) {
+					await self.handleRequestError(error, 'Error getting version')
+					return
+				}
+
+				self.log('error', 'Error getting version: ' + error.message)
+			}
+		} finally {
+			self.SYSTEM_INFO_CHECK_IN_FLIGHT = false
 		}
 	},
 
