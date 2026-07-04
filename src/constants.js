@@ -40,4 +40,5 @@ module.exports = {
 	INTERVAL_RESOURCES: null,
 	RECONNECT_INTERVAL: null,
 	TOKEN_INTERVAL: null,
+	STATE_CHECK_IN_FLIGHT: false,
 }

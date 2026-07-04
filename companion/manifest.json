@@ -2,7 +2,7 @@
 	"$schema": "../node_modules/@companion-module/base/assets/manifest.schema.json",
 	"type": "connection",
 	"id": "kiloview-cubex1",
-	"name": "Kiloview CUBE X1",
+	"name": "kiloview-cubex1",
 	"shortname": "CUBE X1",
 	"description": "Module to control the Kiloview CUBE X1 NDI High Bandwidth + NDI|HX Distribution System (matrix routing, playlists, output locking and templates)",
 	"version": "1.0.0",
@@ -23,5 +23,5 @@
 	"legacyIds": [],
 	"manufacturer": "Kiloview",
 	"products": ["CUBE X1"],
-	"keywords": ["Kiloview", "CUBE", "X1", "NDI", "Matrix", "Router", "Video", "Distribution"]
+	"keywords": ["CUBE", "X1", "NDI", "Matrix", "Router", "Video", "Distribution"]
 }

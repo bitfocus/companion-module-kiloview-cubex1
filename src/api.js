@@ -3,6 +3,37 @@ const { InstanceStatus } = require('@companion-module/base')
 const KiloviewCubeX1 = require('./cubex1')
 
 module.exports = {
+	disposeDevice: function (device) {
+		if (!device) {
+			return
+		}
+
+		device
+			.logout()
+			.catch(() => {})
+			.finally(() => {
+				device.close()
+			})
+	},
+
+	parsePollingRate: function (value, min, defaultValue) {
+		const rate = parseInt(value, 10)
+		if (!Number.isFinite(rate) || rate < min) {
+			return defaultValue
+		}
+
+		return rate
+	},
+
+	handleConnectionFailure: function (error, context) {
+		let self = this
+
+		self.log('error', `${context}: ${error.message}`)
+		self.updateStatus(InstanceStatus.ConnectionFailure)
+		self.stopIntervals()
+		self.startReconnectInterval()
+	},
+
 	stopIntervals: function () {
 		let self = this
 
@@ -21,6 +52,10 @@ module.exports = {
 		let self = this
 
 		self.stopIntervals()
+
+		const previousDevice = self.DEVICE
+		self.DEVICE = null
+		self.disposeDevice(previousDevice)
 
 		if (self.config.host && self.config.host !== '') {
 			self.updateStatus(InstanceStatus.Connecting)
@@ -88,31 +123,36 @@ module.exports = {
 
 		// Refresh the session token regularly; it is only valid for ~5 minutes
 		self.TOKEN_INTERVAL = setInterval(async () => {
+			if (!self.DEVICE) {
+				return
+			}
+
 			try {
 				await self.DEVICE.refreshToken()
 				if (self.config.verbose) {
 					self.log('debug', 'Session token refreshed.')
 				}
 			} catch (error) {
+				if (error.unreachable === true || error.authFailure === true) {
+					self.handleConnectionFailure(error, 'Session refresh failed')
+					return
+				}
+
 				self.log('error', 'Error refreshing session token: ' + error.message)
 			}
 		}, self.TOKEN_REFRESH_TIME)
 
 		if (self.config.polling) {
-			if (self.config.pollingrate === undefined || self.config.pollingrate < 500) {
-				self.config.pollingrate = self.POLLINGRATE
-			}
-
-			if (self.config.pollingrate_resources === undefined || self.config.pollingrate_resources < 1000) {
-				self.config.pollingrate_resources = self.POLLINGRATE_RESOURCES
-			}
-
-			self.log('info', `Starting Update Interval: Fetching new data from Device every ${self.config.pollingrate}ms.`)
-			self.INTERVAL = setInterval(self.checkState.bind(self), parseInt(self.config.pollingrate))
-			self.INTERVAL_RESOURCES = setInterval(
-				self.checkSystemInfo.bind(self),
-				parseInt(self.config.pollingrate_resources),
+			const pollingRate = self.parsePollingRate(self.config.pollingrate, 500, self.POLLINGRATE)
+			const pollingRateResources = self.parsePollingRate(
+				self.config.pollingrate_resources,
+				1000,
+				self.POLLINGRATE_RESOURCES,
 			)
+
+			self.log('info', `Starting Update Interval: Fetching new data from Device every ${pollingRate}ms.`)
+			self.INTERVAL = setInterval(self.checkState.bind(self), pollingRate)
+			self.INTERVAL_RESOURCES = setInterval(self.checkSystemInfo.bind(self), pollingRateResources)
 		} else {
 			self.log(
 				'info',
@@ -127,9 +167,11 @@ module.exports = {
 	async checkState() {
 		let self = this
 
-		if (!self.DEVICE) {
+		if (!self.DEVICE || self.STATE_CHECK_IN_FLIGHT) {
 			return
 		}
+
+		self.STATE_CHECK_IN_FLIGHT = true
 
 		try {
 			// Determine the panel to use (the CUBE X1 exposes one panel, typically "default")
@@ -159,17 +201,15 @@ module.exports = {
 			self.updateStatus(InstanceStatus.Ok)
 		} catch (error) {
 			if (error.unreachable === true) {
-				self.log('error', 'Error getting panel state: ' + error.message)
-				self.updateStatus(InstanceStatus.ConnectionFailure)
-				// Timers are cleaned up at the start of initConnection, which startReconnectInterval will call
-				self.stopIntervals()
-				self.startReconnectInterval()
+				self.handleConnectionFailure(error, 'Error getting panel state')
 				return
 			}
 
 			if (self.config.verbose) {
 				self.log('debug', 'Error getting panel state: ' + error.message)
 			}
+		} finally {
+			self.STATE_CHECK_IN_FLIGHT = false
 		}
 
 		self.rebuildChoices()
@@ -192,9 +232,12 @@ module.exports = {
 			const info = await self.DEVICE.getSystemInfo()
 			self.STATE.system_info = info?.msg || null
 		} catch (error) {
-			if (self.config.verbose) {
-				self.log('debug', 'Error getting system info: ' + error.message)
+			if (error.unreachable === true) {
+				self.handleConnectionFailure(error, 'Error getting system info')
+				return
 			}
+
+			self.log('error', 'Error getting system info: ' + error.message)
 		}
 
 		try {
@@ -202,9 +245,12 @@ module.exports = {
 			self.STATE.sn = version?.msg?.sn || ''
 			self.STATE.version = version?.msg?.version || ''
 		} catch (error) {
-			if (self.config.verbose) {
-				self.log('debug', 'Error getting version: ' + error.message)
+			if (error.unreachable === true) {
+				self.handleConnectionFailure(error, 'Error getting version')
+				return
 			}
+
+			self.log('error', 'Error getting version: ' + error.message)
 		}
 	},
 

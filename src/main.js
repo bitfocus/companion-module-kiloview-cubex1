@@ -39,9 +39,8 @@ class KiloviewX1Instance extends InstanceBase {
 	async destroy() {
 		try {
 			this.stopIntervals()
-			if (this.DEVICE) {
-				this.DEVICE.logout().catch(() => {})
-			}
+			this.disposeDevice(this.DEVICE)
+			this.DEVICE = null
 		} catch (error) {
 			this.log('error', 'destroy error: ' + error)
 		}

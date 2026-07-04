@@ -12,6 +12,9 @@ module.exports = {
 				await self.checkState()
 			} catch (error) {
 				self.log('error', `Error in action "${description}": ${error.message}`)
+				if (error.unreachable === true) {
+					self.handleConnectionFailure(error, `Action "${description}" failed`)
+				}
 			}
 		}
 

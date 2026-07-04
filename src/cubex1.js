@@ -187,6 +187,11 @@ class KiloviewCubeX1 {
 		}
 	}
 
+	close() {
+		this.httpAgent.destroy()
+		this.httpsAgent.destroy()
+	}
+
 	/**
 	 * Refresh the bearer token (valid ~5 minutes) without a full re-login.
 	 */
