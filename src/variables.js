@@ -77,6 +77,16 @@ module.exports = {
 			variableObj.firmware_version = self.STATE.version || ''
 
 			const sysInfo = self.STATE.system_info
+			variableObj.cpu = ''
+			variableObj.cpu_temp_c = ''
+			variableObj.cpu_temp_f = ''
+			variableObj.memory = ''
+			variableObj.uptime = ''
+			variableObj.input_count = ''
+			variableObj.output_count = ''
+			variableObj.abnormal_input_count = ''
+			variableObj.abnormal_output_count = ''
+
 			if (sysInfo) {
 				variableObj.cpu = sysInfo.cpu !== null && sysInfo.cpu !== undefined ? sysInfo.cpu + '%' : ''
 				variableObj.cpu_temp_c = sysInfo.cpu_temp?.c !== undefined ? sysInfo.cpu_temp.c + '°C' : ''

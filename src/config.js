@@ -1,5 +1,3 @@
-const { Regex } = require('@companion-module/base')
-
 module.exports = {
 	getConfigFields() {
 		let self = this
@@ -11,7 +9,7 @@ module.exports = {
 				width: 12,
 				label: 'Information',
 				value:
-					'This module controls the Kiloview CUBE X1 NDI distribution system. It supports matrix routing of NDI sources to outputs, playlists, output locking/favorites and panel templates.',
+					'This module controls the Kiloview CUBE X1 NDI distribution system. It supports matrix routing of NDI sources to outputs, playlists, output locking/favorites and panel templates. When multiple panels exist on the device, set Panel ID or leave it empty to use the first panel.',
 			},
 			{
 				type: 'static-text',
@@ -26,7 +24,6 @@ module.exports = {
 				label: 'Device IP / Host',
 				width: 6,
 				default: '',
-				regex: Regex.HOSTNAME,
 			},
 			{
 				type: 'dropdown',
@@ -40,12 +37,38 @@ module.exports = {
 				],
 			},
 			{
-				type: 'textinput',
+				type: 'number',
 				id: 'port',
 				label: 'Port',
 				width: 3,
-				default: '80',
-				regex: Regex.PORT,
+				default: 80,
+				min: 1,
+				max: 65535,
+			},
+			{
+				type: 'textinput',
+				id: 'panel_id',
+				label: 'Panel ID (optional)',
+				width: 3,
+				default: '',
+				tooltip: 'Leave empty to use the first panel returned by the device.',
+			},
+			{
+				type: 'checkbox',
+				id: 'verify_tls',
+				label: 'Verify HTTPS Certificate',
+				default: false,
+				width: 3,
+				isVisibleExpression: '$(options:protocol) === "https"',
+			},
+			{
+				type: 'static-text',
+				id: 'tlsInfo',
+				width: 9,
+				label: ' ',
+				value:
+					'Leave certificate verification disabled for self-signed device certificates. Enable it only when the device presents a trusted certificate.',
+				isVisibleExpression: '$(options:protocol) === "https"',
 			},
 			{
 				type: 'static-text',
@@ -62,18 +85,19 @@ module.exports = {
 				default: 'admin',
 			},
 			{
-				type: 'textinput',
+				type: 'secret-text',
 				label: 'Password',
 				id: 'password',
 				width: 3,
-				default: 'Admin123',
+				default: '',
 			},
 			{
 				type: 'static-text',
 				id: 'authInfo',
 				width: 6,
 				label: ' ',
-				value: 'The CUBE X1 requires a valid user login. The module keeps the session token refreshed automatically.',
+				value:
+					'The CUBE X1 requires a valid user login. The module keeps the session token refreshed automatically. The factory default password is Admin123.',
 			},
 			{
 				type: 'static-text',
@@ -97,7 +121,7 @@ module.exports = {
 				default: self.POLLINGRATE,
 				width: 3,
 				min: 500,
-				max: 60000,
+				max: self.POLLINGRATE_MAX,
 				isVisibleExpression: '!!$(options:polling)',
 			},
 			{
@@ -107,8 +131,17 @@ module.exports = {
 				default: self.POLLINGRATE_RESOURCES,
 				width: 3,
 				min: 1000,
-				max: 600000,
+				max: self.POLLINGRATE_RESOURCES_MAX,
 				isVisibleExpression: '!!$(options:polling)',
+			},
+			{
+				type: 'number',
+				id: 'request_timeout',
+				label: 'HTTP Request Timeout (ms)',
+				default: self.REQUEST_TIMEOUT_DEFAULT,
+				width: 3,
+				min: 1000,
+				max: 60000,
 			},
 			{
 				type: 'static-text',
@@ -130,7 +163,7 @@ module.exports = {
 				width: 9,
 				label: ' ',
 				value:
-					'Enabling Verbose Logging will push all incoming and outgoing data to the log, which is helpful for debugging.',
+					'Enabling Verbose Logging will push all incoming and outgoing HTTP requests to the log, which is helpful for debugging.',
 			},
 		]
 	},

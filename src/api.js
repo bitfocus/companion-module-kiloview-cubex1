@@ -1,6 +1,7 @@
 const { InstanceStatus } = require('@companion-module/base')
 
 const KiloviewCubeX1 = require('./cubex1')
+const constants = require('./constants')
 
 module.exports = {
 	disposeDevice: function (device) {
@@ -26,13 +27,93 @@ module.exports = {
 		return this.disposeDevice(device)
 	},
 
-	parsePollingRate: function (value, min, defaultValue) {
+	parsePollingRate: function (value, min, max, defaultValue) {
 		const rate = parseInt(value, 10)
 		if (!Number.isFinite(rate) || rate < min) {
 			return defaultValue
 		}
 
+		if (rate > max) {
+			return max
+		}
+
 		return rate
+	},
+
+	resetRuntimeState: function () {
+		let self = this
+
+		Object.assign(self.STATE, constants.createDefaultState())
+
+		const choices = constants.createDefaultChoiceSets()
+		self.CHOICES_INPUTS = choices.CHOICES_INPUTS
+		self.CHOICES_OUTPUTS = choices.CHOICES_OUTPUTS
+		self.CHOICES_ROTATION_LISTS = choices.CHOICES_ROTATION_LISTS
+		self.CHOICES_TEMPLATES = choices.CHOICES_TEMPLATES
+
+		self.POLL_ERROR_COUNT = 0
+
+		self.initActions()
+		self.initFeedbacks()
+		self.initVariables()
+		self.initPresets()
+		self.checkAllFeedbacks()
+		self.checkVariables()
+	},
+
+	clearPanelState: function () {
+		let self = this
+
+		self.STATE.panels = []
+		self.STATE.panel_id = null
+		self.STATE.panel_name = ''
+		self.STATE.panel_detail = null
+		self.STATE.inputs = []
+		self.STATE.outputs = []
+		self.STATE.templates = []
+		self.STATE.rotation_lists = []
+	},
+
+	resolvePanelFromList: function (panels) {
+		let self = this
+
+		if (!(panels instanceof Array) || panels.length === 0) {
+			return null
+		}
+
+		const configured = self.config.panel_id
+		if (configured !== undefined && configured !== null && String(configured).trim() !== '') {
+			const configuredId = parseInt(configured, 10)
+			if (Number.isFinite(configuredId)) {
+				const match = panels.find((panel) => panel.id == configuredId)
+				if (match) {
+					return match
+				}
+
+				self.log('warn', `Configured panel ID ${configuredId} was not found. Using the first available panel.`)
+			}
+		}
+
+		return panels[0]
+	},
+
+	isPlaceholderChoiceId: function (value) {
+		return value === 0 || value === '0'
+	},
+
+	canRunPanelAction: function () {
+		let self = this
+
+		if (!self.DEVICE) {
+			return false
+		}
+
+		if (self.STATE.panel_id === null || self.STATE.panel_id === undefined) {
+			self.log('error', 'Action skipped: no panel is available on the device.')
+			return false
+		}
+
+		return true
 	},
 
 	handleConnectionFailure: function (error, context) {
@@ -45,6 +126,7 @@ module.exports = {
 		self.log('error', `${context}: ${error.message}`)
 		self.updateStatus(InstanceStatus.ConnectionFailure)
 		self.stopIntervals()
+		self.disposeCurrentDevice()
 		self.startReconnectInterval()
 	},
 
@@ -58,7 +140,9 @@ module.exports = {
 		self.log('error', `${context}: ${error.message}`)
 		self.updateStatus(InstanceStatus.AuthenticationFailure, 'Authentication failed. Check credentials.')
 		self.stopIntervals()
-		return self.disposeCurrentDevice()
+		return self.disposeCurrentDevice().then(() => {
+			self.resetRuntimeState()
+		})
 	},
 
 	handleRequestError: function (error, context) {
@@ -75,6 +159,7 @@ module.exports = {
 			return Promise.resolve()
 		}
 
+		this.log('error', `${context}: ${error.message}`)
 		return Promise.resolve()
 	},
 
@@ -90,6 +175,17 @@ module.exports = {
 		self.INTERVAL_RESOURCES = null
 		self.TOKEN_INTERVAL = null
 		self.RECONNECT_INTERVAL = null
+	},
+
+	async refreshStateAfterAction() {
+		let self = this
+
+		const start = Date.now()
+		while (self.STATE_CHECK_IN_FLIGHT && Date.now() - start < 10000) {
+			await new Promise((resolve) => setTimeout(resolve, 50))
+		}
+
+		await self.checkState()
 	},
 
 	async initConnection() {
@@ -108,6 +204,7 @@ module.exports = {
 			const previousDevice = self.DEVICE
 			self.DEVICE = null
 			await self.disposeDevice(previousDevice)
+			self.resetRuntimeState()
 
 			if (!self.config.host || self.config.host === '') {
 				self.updateStatus(InstanceStatus.Disconnected, 'No host configured')
@@ -125,9 +222,14 @@ module.exports = {
 				self,
 				self.config.host,
 				self.config.username,
-				self.config.password,
+				self.getPassword(),
 				self.config.protocol,
 				self.config.port,
+				{
+					rejectUnauthorized: self.config.verify_tls === true,
+					requestTimeout: self.config.request_timeout,
+					maxBodyBytes: self.REQUEST_BODY_MAX_BYTES,
+				},
 			)
 			self.DEVICE = device
 
@@ -144,6 +246,7 @@ module.exports = {
 
 				if (error.authFailure === true) {
 					self.log('error', 'Login failed. Check your username and password and try again.')
+					self.resetRuntimeState()
 					self.updateStatus(InstanceStatus.AuthenticationFailure, 'Login failed. See log.')
 					return
 				}
@@ -170,11 +273,6 @@ module.exports = {
 			if (!self.isConnectionCurrent(generation, device)) {
 				return
 			}
-
-			self.initActions()
-			self.initFeedbacks()
-			self.initVariables()
-			self.initPresets()
 
 			self.checkAllFeedbacks()
 			self.checkVariables()
@@ -221,12 +319,13 @@ module.exports = {
 	startIntervals: function () {
 		let self = this
 
-		// Refresh the session token regularly; it is only valid for ~5 minutes
 		self.TOKEN_INTERVAL = setInterval(async () => {
 			const device = self.DEVICE
-			if (!device) {
+			if (!device || self.TOKEN_REFRESH_IN_FLIGHT) {
 				return
 			}
+
+			self.TOKEN_REFRESH_IN_FLIGHT = true
 
 			try {
 				await device.refreshToken()
@@ -239,15 +338,18 @@ module.exports = {
 					return
 				}
 
-				self.log('error', 'Error refreshing session token: ' + error.message)
+				await self.handleRequestError(error, 'Session refresh failed')
+			} finally {
+				self.TOKEN_REFRESH_IN_FLIGHT = false
 			}
 		}, self.TOKEN_REFRESH_TIME)
 
 		if (self.config.polling) {
-			const pollingRate = self.parsePollingRate(self.config.pollingrate, 500, self.POLLINGRATE)
+			const pollingRate = self.parsePollingRate(self.config.pollingrate, 500, self.POLLINGRATE_MAX, self.POLLINGRATE)
 			const pollingRateResources = self.parsePollingRate(
 				self.config.pollingrate_resources,
 				1000,
+				self.POLLINGRATE_RESOURCES_MAX,
 				self.POLLINGRATE_RESOURCES,
 			)
 
@@ -262,9 +364,6 @@ module.exports = {
 		}
 	},
 
-	/**
-	 * Poll panel / routing state. This is the main poll loop.
-	 */
 	async checkState(generation, device) {
 		let self = this
 
@@ -289,29 +388,35 @@ module.exports = {
 
 			if (panels?.msg instanceof Array && panels.msg.length > 0) {
 				self.STATE.panels = panels.msg
-				self.STATE.panel_id = panels.msg[0].id
-				self.STATE.panel_name = panels.msg[0].name
+				const panel = self.resolvePanelFromList(panels.msg)
+				if (panel) {
+					self.STATE.panel_id = panel.id
+					self.STATE.panel_name = panel.name
+				}
+			} else {
+				self.clearPanelState()
 			}
 
 			if (self.STATE.panel_id === null || self.STATE.panel_id === undefined) {
 				self.log('error', 'No panel found on device.')
-				return
-			}
+				self.updateStatus(InstanceStatus.UnknownWarning, 'No panel found on device')
+			} else {
+				const detail = await device.queryPanelDetail(self.STATE.panel_id)
+				if (!self.isConnectionCurrent(generation, device)) {
+					return
+				}
 
-			const detail = await device.queryPanelDetail(self.STATE.panel_id)
-			if (!self.isConnectionCurrent(generation, device)) {
-				return
-			}
+				if (detail?.msg) {
+					self.STATE.panel_detail = detail.msg
+					self.STATE.inputs = detail.msg.panel_inputs || []
+					self.STATE.outputs = detail.msg.panel_outputs || []
+					self.STATE.templates = detail.msg.panel_templates || []
+					self.STATE.rotation_lists = detail.msg.rotation_lists || []
+				}
 
-			if (detail?.msg) {
-				self.STATE.panel_detail = detail.msg
-				self.STATE.inputs = detail.msg.panel_inputs || []
-				self.STATE.outputs = detail.msg.panel_outputs || []
-				self.STATE.templates = detail.msg.panel_templates || []
-				self.STATE.rotation_lists = detail.msg.rotation_lists || []
+				self.POLL_ERROR_COUNT = 0
+				self.updateStatus(InstanceStatus.Ok)
 			}
-
-			self.updateStatus(InstanceStatus.Ok)
 		} catch (error) {
 			if (error.unreachable === true || error.authFailure === true) {
 				await self.handleRequestError(error, 'Error getting panel state')
@@ -319,6 +424,10 @@ module.exports = {
 			}
 
 			self.log('error', 'Error getting panel state: ' + error.message)
+			self.POLL_ERROR_COUNT++
+			if (self.POLL_ERROR_COUNT >= self.POLL_ERROR_WARNING_THRESHOLD) {
+				self.updateStatus(InstanceStatus.UnknownWarning, 'Repeated errors polling panel state')
+			}
 		} finally {
 			self.STATE_CHECK_IN_FLIGHT = false
 		}
@@ -333,9 +442,6 @@ module.exports = {
 		self.checkVariables()
 	},
 
-	/**
-	 * Poll slow-changing data (system info, version).
-	 */
 	async checkSystemInfo(generation, device) {
 		let self = this
 
@@ -388,12 +494,14 @@ module.exports = {
 		} finally {
 			self.SYSTEM_INFO_CHECK_IN_FLIGHT = false
 		}
+
+		if (!self.isConnectionCurrent(generation, device)) {
+			return
+		}
+
+		self.checkVariables()
 	},
 
-	/**
-	 * Rebuild the dropdown choices used by actions/feedbacks/presets from the
-	 * current panel state. Re-initializes the definitions if anything changed.
-	 */
 	rebuildChoices: function () {
 		let self = this
 
@@ -402,7 +510,7 @@ module.exports = {
 			label: input.alias || input.name || `Input ${input.id}`,
 		}))
 		if (inputChoices.length === 0) {
-			inputChoices = [{ id: 0, label: '- No inputs available -' }]
+			inputChoices = [{ ...constants.PLACEHOLDER_INPUT }]
 		}
 
 		let outputChoices = self.STATE.outputs.map((output) => ({
@@ -410,7 +518,7 @@ module.exports = {
 			label: output.alias || output.name || `Output ${output.id}`,
 		}))
 		if (outputChoices.length === 0) {
-			outputChoices = [{ id: 0, label: '- No outputs available -' }]
+			outputChoices = [{ ...constants.PLACEHOLDER_OUTPUT }]
 		}
 
 		let rotationChoices = self.STATE.rotation_lists.map((list) => ({

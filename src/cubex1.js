@@ -3,14 +3,9 @@ const https = require('https')
 
 /**
  * HTTP API client for the Kiloview CUBE X1 NDI distribution system.
- *
- * All endpoints live below /api/cube/CubeServer/.
- * Authentication uses a bearer token obtained via /user/login which is only
- * valid for ~5 minutes, so it is refreshed periodically via /user/token/get
- * and re-acquired on auth failures.
  */
 class KiloviewCubeX1 {
-	constructor(owner, ip, username, password, protocol = 'http', port = 80) {
+	constructor(owner, ip, username, password, protocol = 'http', port = 80, options = {}) {
 		this.owner = owner
 		this.connection_info = {
 			ip,
@@ -20,7 +15,12 @@ class KiloviewCubeX1 {
 			port,
 		}
 
-		this.baseURL = `${protocol}://${ip}:${port}/api/cube/CubeServer`
+		this.rejectUnauthorized = options.rejectUnauthorized === true
+		this.requestTimeout = options.requestTimeout || 5000
+		this.maxBodyBytes = options.maxBodyBytes || 10 * 1024 * 1024
+
+		const hostForUrl = KiloviewCubeX1.formatHostForUrl(ip)
+		this.baseURL = `${protocol}://${hostForUrl}:${port}/api/cube/CubeServer`
 
 		const agentOpts = {
 			keepAlive: true,
@@ -31,7 +31,7 @@ class KiloviewCubeX1 {
 		this.httpAgent = new http.Agent(agentOpts)
 		this.httpsAgent = new https.Agent({
 			...agentOpts,
-			rejectUnauthorized: false,
+			rejectUnauthorized: this.rejectUnauthorized,
 		})
 
 		this.token = ''
@@ -60,6 +60,25 @@ class KiloviewCubeX1 {
 		this.owner.log(level, message)
 	}
 
+	static formatHostForUrl(host) {
+		const trimmed = String(host).trim()
+		if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+			return trimmed
+		}
+
+		if (/^[0-9a-fA-F:]+$/.test(trimmed) && trimmed.includes(':')) {
+			return `[${trimmed}]`
+		}
+
+		return trimmed
+	}
+
+	_verboseLog(message) {
+		if (this.owner.config?.verbose) {
+			this.log('debug', message)
+		}
+	}
+
 	_request(method, path, data, contentType = 'application/json') {
 		if (this._closed) {
 			const error = new Error('Client closed')
@@ -86,7 +105,6 @@ class KiloviewCubeX1 {
 				'Content-Type': contentType,
 				Connection: 'keep-alive',
 				language: 'en',
-				// Required on /user/login ("is small screen"), harmless elsewhere
 				screen: 'false',
 			}
 
@@ -103,20 +121,31 @@ class KiloviewCubeX1 {
 				port: urlObj.port || (isHttps ? 443 : 80),
 				path: urlObj.pathname + urlObj.search,
 				method: method,
-				rejectUnauthorized: false,
+				rejectUnauthorized: this.rejectUnauthorized,
 				agent: isHttps ? this.httpsAgent : this.httpAgent,
-				timeout: 5000,
+				timeout: this.requestTimeout,
 				headers: headers,
 			}
 
+			this._verboseLog(`HTTP ${method} ${options.path}`)
+
 			const req = (isHttps ? https : http).request(options, (res) => {
 				let resBody = ''
+				let bodyTooLarge = false
 				const finish = () => {
 					this._activeRequests.delete(req)
 				}
 
 				res.on('data', (chunk) => {
+					if (bodyTooLarge) {
+						return
+					}
+
 					resBody += chunk
+					if (resBody.length > this.maxBodyBytes) {
+						bodyTooLarge = true
+						req.destroy(new Error('Response body too large'))
+					}
 				})
 				res.on('error', (err) => {
 					finish()
@@ -127,6 +156,12 @@ class KiloviewCubeX1 {
 				})
 				res.on('end', () => {
 					finish()
+					if (bodyTooLarge) {
+						return
+					}
+
+					this._verboseLog(`HTTP ${method} ${options.path} -> ${res.statusCode}`)
+
 					try {
 						const parsed = JSON.parse(resBody)
 						if (typeof parsed === 'object' && parsed !== null) {
@@ -142,7 +177,11 @@ class KiloviewCubeX1 {
 			this._activeRequests.add(req)
 
 			req.on('timeout', () => {
-				req.destroy(new Error('Request timed out'))
+				const error = new Error('Request timed out')
+				error.name = 'KiloviewX1Error'
+				error.unreachable = true
+				error.timeout = true
+				req.destroy(error)
 			})
 
 			req.on('error', (err) => {
@@ -150,6 +189,9 @@ class KiloviewCubeX1 {
 				const error = new Error(err.message)
 				error.name = 'KiloviewX1Error'
 				error.unreachable = true
+				if (err.message === 'Request timed out') {
+					error.timeout = true
+				}
 				reject(error)
 			})
 
@@ -183,12 +225,23 @@ class KiloviewCubeX1 {
 		if (result?._statusCode === 401 || result?._statusCode === 403) {
 			return true
 		}
-		// Token errors come back as result=error with an auth related code/info
-		if (result?.result === 'error' && result?.error?.info) {
-			const info = String(result.error.info).toLowerCase()
-			return info.includes('token') || info.includes('auth') || info.includes('login') || info.includes('expire')
+
+		if (result?.result === 'error' && result?.error?.code !== undefined) {
+			const code = String(result.error.code)
+			return code === '401' || code === '403' || code.startsWith('401') || code.startsWith('403')
 		}
+
 		return false
+	}
+
+	_validateResult(result) {
+		if (result?._statusCode >= 400) {
+			this._throwApiError(result)
+		}
+
+		if (result?.result === 'error') {
+			this._throwApiError(result)
+		}
 	}
 
 	_throwApiError(result) {
@@ -211,8 +264,7 @@ class KiloviewCubeX1 {
 			client_secret: '',
 		}
 
-		this.token = ''
-
+		const previousToken = this.token
 		const result = await this._request('POST', '/user/login', params, 'application/x-www-form-urlencoded')
 
 		if (result && result.access_token) {
@@ -221,9 +273,14 @@ class KiloviewCubeX1 {
 			return true
 		}
 
+		this.token = previousToken
 		this.authorized = false
 		const error = this._apiError(result)
-		error.authFailure = true
+		if (result?._statusCode >= 500 || result?._statusCode === 0) {
+			error.unreachable = true
+		} else {
+			error.authFailure = true
+		}
 		throw error
 	}
 
@@ -253,19 +310,25 @@ class KiloviewCubeX1 {
 		this.httpsAgent.destroy()
 	}
 
-	/**
-	 * Refresh the bearer token (valid ~5 minutes) without a full re-login.
-	 */
 	async refreshToken() {
 		return this._withAuthMutex(async () => {
 			const result = await this._request('GET', '/user/token/get')
+
+			if (result?._statusCode >= 400 && !this._isAuthFailure(result)) {
+				const error = this._apiError(result)
+				error.unreachable = true
+				throw error
+			}
 
 			if (result?.result === 'ok' && result?.msg?.access_token) {
 				this.token = result.msg.access_token
 				return true
 			}
 
-			// Fall back to a full login if the refresh failed (token already expired)
+			if (this._isAuthFailure(result)) {
+				return await this._loginImpl()
+			}
+
 			return await this._loginImpl()
 		})
 	}
@@ -285,10 +348,7 @@ class KiloviewCubeX1 {
 			result = await this._request('GET', fullPath)
 		}
 
-		if (result?.result === 'error') {
-			this._throwApiError(result)
-		}
-
+		this._validateResult(result)
 		return result
 	}
 
@@ -304,29 +364,13 @@ class KiloviewCubeX1 {
 			result = await this._request('POST', path, data)
 		}
 
-		if (result?.result === 'error') {
-			this._throwApiError(result)
-		}
-
+		this._validateResult(result)
 		return result
 	}
 
-	// ---------------------------------------------------------------------
-	// System management
-	// ---------------------------------------------------------------------
-
-	/** System info (CPU, memory, network, input/output counts). No auth required. */
 	async getSystemInfo() {
-		const result = await this._request('GET', '/system/info')
-		if (result?.result === 'error') {
-			throw this._apiError(result)
-		}
-		return result
+		return await this.authGet('/system/info')
 	}
-
-	// ---------------------------------------------------------------------
-	// Service management
-	// ---------------------------------------------------------------------
 
 	async getVersion() {
 		return await this.authGet('/server/version')
@@ -340,10 +384,6 @@ class KiloviewCubeX1 {
 		return await this.authPost('/server/restore', {})
 	}
 
-	// ---------------------------------------------------------------------
-	// Resource management
-	// ---------------------------------------------------------------------
-
 	async queryAllInputSources() {
 		return await this.authGet('/resource/queryAllInputSrc')
 	}
@@ -356,10 +396,6 @@ class KiloviewCubeX1 {
 		return await this.authGet('/resource/queryRotationList', { rotation_list_id })
 	}
 
-	// ---------------------------------------------------------------------
-	// Panel management
-	// ---------------------------------------------------------------------
-
 	async queryPanel() {
 		return await this.authGet('/panel/queryPanel')
 	}
@@ -368,7 +404,6 @@ class KiloviewCubeX1 {
 		return await this.authGet('/panel/queryPanelDetail', { panel_id })
 	}
 
-	/** Route an input source to an output. input_src_id = null disconnects the output. */
 	async setPanelOutputInputSrc(panel_id, output_id, input_src_id) {
 		return await this.authPost('/panel/setPanelOutputInputSrc', {
 			panel_id,
@@ -377,7 +412,6 @@ class KiloviewCubeX1 {
 		})
 	}
 
-	/** Assign a rotation playlist to an output. rotation_list_id = null disables the playlist. */
 	async setPanelOutputRotationList(panel_id, output_id, rotation_list_id, loop) {
 		return await this.authPost('/panel/setPanelOutputRotationList', {
 			panel_id,
@@ -387,7 +421,6 @@ class KiloviewCubeX1 {
 		})
 	}
 
-	/** Route an input to all outputs (select = true) or deselect from all outputs (select = false). */
 	async setPanelInputSrcSelectAll(panel_id, input_src_id, select) {
 		return await this.authPost('/panel/setPanelInputSrcSelectAll', {
 			panel_id,
@@ -420,10 +453,6 @@ class KiloviewCubeX1 {
 			loop,
 		})
 	}
-
-	// ---------------------------------------------------------------------
-	// Template management
-	// ---------------------------------------------------------------------
 
 	async queryTemplates(panel_id) {
 		return await this.authGet('/template/queryTemplate', { panel_id })

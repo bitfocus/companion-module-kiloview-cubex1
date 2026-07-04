@@ -1,3 +1,5 @@
+const { InstanceStatus } = require('@companion-module/base')
+
 module.exports = {
 	initActions: function () {
 		let self = this
@@ -5,16 +7,35 @@ module.exports = {
 
 		const inputChoicesWithNone = [{ id: 'none', label: '- None (Disconnect) -' }, ...self.CHOICES_INPUTS]
 
-		const runAction = async (description, fn) => {
+		const runAction = async (description, fn, action = null) => {
 			if (!self.DEVICE) {
 				self.log('error', `Action "${description}" skipped: not connected to device.`)
 				return
 			}
 
+			if (!self.canRunPanelAction()) {
+				return
+			}
+
+			const options = action?.options
+			if (options) {
+				for (const key of ['output', 'input', 'playlist', 'template']) {
+					if (options[key] === undefined) {
+						continue
+					}
+					if (key === 'input' && options[key] === 'none') {
+						continue
+					}
+					if (self.isPlaceholderChoiceId(options[key])) {
+						self.log('error', `Action "${description}" skipped: no valid ${key} selected.`)
+						return
+					}
+				}
+			}
+
 			try {
 				await fn()
-				// Refresh state right away so feedbacks/variables update quickly
-				await self.checkState()
+				await self.refreshStateAfterAction()
 			} catch (error) {
 				self.log('error', `Error in action "${description}": ${error.message}`)
 				await self.handleRequestError(error, `Action "${description}" failed`)
@@ -46,8 +67,10 @@ module.exports = {
 			callback: async function (action) {
 				let options = action.options
 				const input_src_id = options.input === 'none' ? null : parseInt(options.input)
-				await runAction('Route Input to Output', () =>
-					self.DEVICE.setPanelOutputInputSrc(self.STATE.panel_id, parseInt(options.output), input_src_id),
+				await runAction(
+					'Route Input to Output',
+					() => self.DEVICE.setPanelOutputInputSrc(self.STATE.panel_id, parseInt(options.output), input_src_id),
+					action,
 				)
 			},
 		}
@@ -65,8 +88,10 @@ module.exports = {
 			],
 			callback: async function (action) {
 				let options = action.options
-				await runAction('Disconnect Output', () =>
-					self.DEVICE.setPanelOutputInputSrc(self.STATE.panel_id, parseInt(options.output), null),
+				await runAction(
+					'Disconnect Output',
+					() => self.DEVICE.setPanelOutputInputSrc(self.STATE.panel_id, parseInt(options.output), null),
+					action,
 				)
 			},
 		}
@@ -95,12 +120,15 @@ module.exports = {
 			],
 			callback: async function (action) {
 				let options = action.options
-				await runAction('Select Input on All Outputs', () =>
-					self.DEVICE.setPanelInputSrcSelectAll(
-						self.STATE.panel_id,
-						parseInt(options.input),
-						options.select === 'select',
-					),
+				await runAction(
+					'Select Input on All Outputs',
+					() =>
+						self.DEVICE.setPanelInputSrcSelectAll(
+							self.STATE.panel_id,
+							parseInt(options.input),
+							options.select === 'select',
+						),
+					action,
 				)
 			},
 		}
@@ -135,13 +163,16 @@ module.exports = {
 			],
 			callback: async function (action) {
 				let options = action.options
-				await runAction('Set Playlist for Output', () =>
-					self.DEVICE.setPanelOutputRotationList(
-						self.STATE.panel_id,
-						parseInt(options.output),
-						parseInt(options.playlist),
-						options.loop,
-					),
+				await runAction(
+					'Set Playlist for Output',
+					() =>
+						self.DEVICE.setPanelOutputRotationList(
+							self.STATE.panel_id,
+							parseInt(options.output),
+							parseInt(options.playlist),
+							options.loop,
+						),
+					action,
 				)
 			},
 		}
@@ -161,8 +192,10 @@ module.exports = {
 				let options = action.options
 				const output = self.getOutputById(options.output)
 				const loop = output?.rotation_list_loop ?? true
-				await runAction('Stop Playlist on Output', () =>
-					self.DEVICE.setPanelOutputRotationList(self.STATE.panel_id, parseInt(options.output), null, loop),
+				await runAction(
+					'Stop Playlist on Output',
+					() => self.DEVICE.setPanelOutputRotationList(self.STATE.panel_id, parseInt(options.output), null, loop),
+					action,
 				)
 			},
 		}
@@ -191,6 +224,11 @@ module.exports = {
 			],
 			callback: async function (action) {
 				let options = action.options
+
+				if (!self.DEVICE || !self.canRunPanelAction()) {
+					return
+				}
+
 				const output = self.getOutputById(options.output)
 
 				if (!output || output.rotation_list_id === null || output.rotation_list_id === undefined) {
@@ -203,13 +241,16 @@ module.exports = {
 					loop = !(output.rotation_list_loop === true)
 				}
 
-				await runAction('Set Playlist Looping', () =>
-					self.DEVICE.setPanelOutputRotationListLoop(
-						self.STATE.panel_id,
-						parseInt(options.output),
-						output.rotation_list_id,
-						loop,
-					),
+				await runAction(
+					'Set Playlist Looping',
+					() =>
+						self.DEVICE.setPanelOutputRotationListLoop(
+							self.STATE.panel_id,
+							parseInt(options.output),
+							output.rotation_list_id,
+							loop,
+						),
+					action,
 				)
 			},
 		}
@@ -245,8 +286,10 @@ module.exports = {
 					lock = !(output?.lock === true)
 				}
 
-				await runAction('Lock/Unlock Output', () =>
-					self.DEVICE.setPanelOutputLock(self.STATE.panel_id, parseInt(options.output), lock),
+				await runAction(
+					'Lock/Unlock Output',
+					() => self.DEVICE.setPanelOutputLock(self.STATE.panel_id, parseInt(options.output), lock),
+					action,
 				)
 			},
 		}
@@ -278,8 +321,10 @@ module.exports = {
 					collect = !(output?.collect === true)
 				}
 
-				await runAction('Favorite/Unfavorite Output', () =>
-					self.DEVICE.setPanelOutputCollect(self.STATE.panel_id, parseInt(options.output), collect),
+				await runAction(
+					'Favorite/Unfavorite Output',
+					() => self.DEVICE.setPanelOutputCollect(self.STATE.panel_id, parseInt(options.output), collect),
+					action,
 				)
 			},
 		}
@@ -314,8 +359,10 @@ module.exports = {
 					return
 				}
 
-				await runAction('Switch Template', () =>
-					self.DEVICE.switchTemplate(self.STATE.panel_id, current.id, parseInt(options.template), options.save),
+				await runAction(
+					'Switch Template',
+					() => self.DEVICE.switchTemplate(self.STATE.panel_id, current.id, parseInt(options.template), options.save),
+					action,
 				)
 			},
 		}
@@ -402,8 +449,10 @@ module.exports = {
 			],
 			callback: async function (action) {
 				let options = action.options
-				await runAction('Delete Template', () =>
-					self.DEVICE.deleteTemplate(self.STATE.panel_id, parseInt(options.template)),
+				await runAction(
+					'Delete Template',
+					() => self.DEVICE.deleteTemplate(self.STATE.panel_id, parseInt(options.template)),
+					action,
 				)
 			},
 		}
@@ -438,13 +487,8 @@ module.exports = {
 					return
 				}
 
-				try {
-					await self.checkSystemInfo()
-					await self.checkState()
-				} catch (error) {
-					self.log('error', 'Error refreshing status: ' + error.message)
-					await self.handleRequestError(error, 'Error refreshing status')
-				}
+				await self.checkSystemInfo()
+				await self.refreshStateAfterAction()
 			},
 		}
 
@@ -460,6 +504,9 @@ module.exports = {
 				try {
 					await self.DEVICE.reboot()
 					self.log('info', 'Reboot command sent. Device will restart.')
+					self.stopIntervals()
+					self.updateStatus(InstanceStatus.ConnectionFailure, 'Device rebooting')
+					self.startReconnectInterval()
 				} catch (error) {
 					self.log('error', 'Error rebooting device: ' + error.message)
 					await self.handleRequestError(error, 'Error rebooting device')
