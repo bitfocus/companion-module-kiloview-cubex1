@@ -1,4 +1,4 @@
-module.exports = {
+export default {
 	getConfigFields() {
 		let self = this
 
@@ -24,6 +24,7 @@ module.exports = {
 				label: 'Device IP / Host',
 				width: 6,
 				default: '',
+				tooltip: 'IPv4 address, IPv6 address or hostname of the CUBE X1. Do not include the protocol or port.',
 			},
 			{
 				type: 'dropdown',

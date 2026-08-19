@@ -7,4 +7,14 @@ const baseConfig = await generateEslintConfig({
 	},
 })
 
-export default [...baseConfig]
+export default [
+	...baseConfig,
+	{
+		// This module is ESM ("type": "module"), but the shared config only opts *.mjs into
+		// module syntax, so .js sources would otherwise fail to parse.
+		files: ['**/*.js'],
+		languageOptions: {
+			sourceType: 'module',
+		},
+	},
+]

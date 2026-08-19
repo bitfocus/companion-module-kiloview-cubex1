@@ -1,20 +1,20 @@
 // Kiloview CUBE X1
-const { InstanceBase, InstanceStatus, Regex } = require('@companion-module/base')
-const upgrades = require('./upgrades')
+import { InstanceBase, InstanceStatus } from '@companion-module/base'
+import upgrades from './upgrades.js'
 
-const KiloviewCubeX1 = require('./cubex1')
-const config = require('./config')
+import KiloviewCubeX1 from './cubex1.js'
+import config from './config.js'
 
-const actions = require('./actions')
-const feedbacks = require('./feedbacks')
-const variables = require('./variables')
-const presets = require('./presets')
+import actions from './actions.js'
+import feedbacks from './feedbacks.js'
+import variables from './variables.js'
+import presets from './presets.js'
 
-const api = require('./api')
+import api from './api.js'
 
-const constants = require('./constants')
+import constants from './constants.js'
 
-class KiloviewX1Instance extends InstanceBase {
+export default class KiloviewX1Instance extends InstanceBase {
 	constructor(internal) {
 		super(internal)
 
@@ -58,6 +58,7 @@ class KiloviewX1Instance extends InstanceBase {
 		this.RECONNECT_INTERVAL = null
 		this.TOKEN_INTERVAL = null
 		this.STATE_CHECK_IN_FLIGHT = false
+		this.STATE_CHECK_PROMISE = null
 		this.SYSTEM_INFO_CHECK_IN_FLIGHT = false
 		this.TOKEN_REFRESH_IN_FLIGHT = false
 		this.CONNECTION_GENERATION = 0
@@ -75,16 +76,7 @@ class KiloviewX1Instance extends InstanceBase {
 	}
 
 	isValidHost(host) {
-		if (!host || typeof host !== 'string') {
-			return false
-		}
-
-		const normalized = this.normalizeHost(host)
-		if (normalized.startsWith('[') && normalized.endsWith(']')) {
-			return /^[0-9a-fA-F:]+$/.test(normalized.slice(1, -1))
-		}
-
-		return Regex.IP.test(normalized) || Regex.HOSTNAME.test(normalized)
+		return KiloviewCubeX1.isValidHost(host)
 	}
 
 	normalizeConfig(config) {
@@ -161,5 +153,4 @@ class KiloviewX1Instance extends InstanceBase {
 	}
 }
 
-module.exports = KiloviewX1Instance
-module.exports.UpgradeScripts = upgrades
+export const UpgradeScripts = upgrades

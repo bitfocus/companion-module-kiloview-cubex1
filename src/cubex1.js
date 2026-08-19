@@ -1,5 +1,6 @@
-const http = require('http')
-const https = require('https')
+import http from 'node:http'
+import https from 'node:https'
+import { isIP } from 'node:net'
 
 /**
  * HTTP API client for the Kiloview CUBE X1 NDI distribution system.
@@ -73,6 +74,43 @@ class KiloviewCubeX1 {
 		return trimmed
 	}
 
+	/**
+	 * Validates a configured host. Accepts IPv4, IPv6 (bare or bracketed) and DNS hostnames.
+	 *
+	 * Note: do not use `Regex.IP` / `Regex.HOSTNAME` from @companion-module/base here. Those are
+	 * `/pattern/`-delimited *strings* meant for the `regex` property of config input fields, not
+	 * RegExp objects, so calling `.test()` on them throws.
+	 */
+	static isValidHost(host) {
+		if (!host || typeof host !== 'string') {
+			return false
+		}
+
+		const normalized = KiloviewCubeX1.formatHostForUrl(host)
+		if (normalized.startsWith('[') && normalized.endsWith(']')) {
+			return isIP(normalized.slice(1, -1)) === 6
+		}
+
+		if (isIP(normalized) !== 0) {
+			return true
+		}
+
+		// A dotted-numeric string that failed isIP() above is a mistyped address (e.g. "256.1.1.1"
+		// or "192.168.1"), not a hostname. Per RFC 1123 the final label cannot be all digits, so
+		// rejecting it here keeps those from being treated as resolvable names.
+		if (/(^|\.)[0-9]+$/.test(normalized)) {
+			return false
+		}
+
+		// Mirrors Regex.HOSTNAME from @companion-module/base, plus the DNS length limit.
+		return (
+			normalized.length <= 253 &&
+			/^(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9])\.)*([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9])$/.test(
+				normalized,
+			)
+		)
+	}
+
 	_verboseLog(message) {
 		if (this.owner.config?.verbose) {
 			this.log('debug', message)
@@ -130,7 +168,8 @@ class KiloviewCubeX1 {
 			this._verboseLog(`HTTP ${method} ${options.path}`)
 
 			const req = (isHttps ? https : http).request(options, (res) => {
-				let resBody = ''
+				const chunks = []
+				let bodyBytes = 0
 				let bodyTooLarge = false
 				const finish = () => {
 					this._activeRequests.delete(req)
@@ -141,11 +180,15 @@ class KiloviewCubeX1 {
 						return
 					}
 
-					resBody += chunk
-					if (resBody.length > this.maxBodyBytes) {
+					// Count bytes, not decoded characters, so the cap holds for multi-byte responses.
+					bodyBytes += chunk.length
+					if (bodyBytes > this.maxBodyBytes) {
 						bodyTooLarge = true
 						req.destroy(new Error('Response body too large'))
+						return
 					}
+
+					chunks.push(chunk)
 				})
 				res.on('error', (err) => {
 					finish()
@@ -162,6 +205,7 @@ class KiloviewCubeX1 {
 
 					this._verboseLog(`HTTP ${method} ${options.path} -> ${res.statusCode}`)
 
+					const resBody = Buffer.concat(chunks).toString('utf8')
 					try {
 						const parsed = JSON.parse(resBody)
 						if (typeof parsed === 'object' && parsed !== null) {
@@ -221,17 +265,18 @@ class KiloviewCubeX1 {
 		return error
 	}
 
+	/**
+	 * Auth failures are detected from the HTTP status only.
+	 *
+	 * The CUBE X1 API (v23.11.2) reports business errors as
+	 * `{ result: 'error', error: { code, info } }` where `code` is a device-specific 5-digit
+	 * string (the documented example is "10002" / "User name doesn't exist"). It never carries
+	 * HTTP-style "401"/"403" values, so matching those in `error.code` would be dead code.
+	 * The docs publish no error-code table and do not state which code accompanies an expired
+	 * session, so no code is special-cased here rather than guessing at one.
+	 */
 	_isAuthFailure(result) {
-		if (result?._statusCode === 401 || result?._statusCode === 403) {
-			return true
-		}
-
-		if (result?.result === 'error' && result?.error?.code !== undefined) {
-			const code = String(result.error.code)
-			return code === '401' || code === '403' || code.startsWith('401') || code.startsWith('403')
-		}
-
-		return false
+		return result?._statusCode === 401 || result?._statusCode === 403
 	}
 
 	_validateResult(result) {
@@ -325,10 +370,7 @@ class KiloviewCubeX1 {
 				return true
 			}
 
-			if (this._isAuthFailure(result)) {
-				return await this._loginImpl()
-			}
-
+			// Anything else (including an expired session) is recovered by logging in again.
 			return await this._loginImpl()
 		})
 	}
@@ -378,22 +420,6 @@ class KiloviewCubeX1 {
 
 	async reboot() {
 		return await this.authPost('/server/reboot', {})
-	}
-
-	async restoreFactorySettings() {
-		return await this.authPost('/server/restore', {})
-	}
-
-	async queryAllInputSources() {
-		return await this.authGet('/resource/queryAllInputSrc')
-	}
-
-	async queryAllRotationLists() {
-		return await this.authGet('/resource/queryAllRotationList')
-	}
-
-	async queryRotationList(rotation_list_id) {
-		return await this.authGet('/resource/queryRotationList', { rotation_list_id })
 	}
 
 	async queryPanel() {
@@ -492,4 +518,4 @@ class KiloviewCubeX1 {
 	}
 }
 
-module.exports = KiloviewCubeX1
+export default KiloviewCubeX1

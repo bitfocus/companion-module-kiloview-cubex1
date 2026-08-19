@@ -1,9 +1,17 @@
-const { InstanceStatus } = require('@companion-module/base')
+import { InstanceStatus } from '@companion-module/base'
 
-const KiloviewCubeX1 = require('./cubex1')
-const constants = require('./constants')
+import KiloviewCubeX1 from './cubex1.js'
+import constants from './constants.js'
 
-module.exports = {
+/**
+ * The device is the source of these values; a firmware quirk or a partial response can send
+ * something other than the documented array. Coerce so downstream `.map()`/`.find()` cannot throw.
+ */
+function asArray(value) {
+	return Array.isArray(value) ? value : []
+}
+
+export default {
 	disposeDevice: function (device) {
 		if (!device) {
 			return Promise.resolve()
@@ -120,14 +128,20 @@ module.exports = {
 		let self = this
 
 		if (self._destroyed) {
-			return
+			return Promise.resolve()
 		}
 
 		self.log('error', `${context}: ${error.message}`)
 		self.updateStatus(InstanceStatus.ConnectionFailure)
 		self.stopIntervals()
-		self.disposeCurrentDevice()
+
+		// Arm the retry before disposing. We only get here because the device is unreachable, so
+		// the logout() inside dispose runs to its full request timeout; waiting on it would push
+		// the first reconnect attempt out by that much. The dispose promise is still returned so
+		// callers keep propagating its errors.
 		self.startReconnectInterval()
+
+		return self.disposeCurrentDevice()
 	},
 
 	handleAuthFailure: function (error, context) {
@@ -155,8 +169,7 @@ module.exports = {
 		}
 
 		if (error.unreachable === true) {
-			this.handleConnectionFailure(error, context)
-			return Promise.resolve()
+			return this.handleConnectionFailure(error, context)
 		}
 
 		this.log('error', `${context}: ${error.message}`)
@@ -180,9 +193,10 @@ module.exports = {
 	async refreshStateAfterAction() {
 		let self = this
 
-		const start = Date.now()
-		while (self.STATE_CHECK_IN_FLIGHT && Date.now() - start < 10000) {
-			await new Promise((resolve) => setTimeout(resolve, 50))
+		// A poll may already be in flight; wait for it to settle so the follow-up read sees
+		// post-action state rather than racing the request that is already open.
+		if (self.STATE_CHECK_PROMISE) {
+			await self.STATE_CHECK_PROMISE.catch(() => {})
 		}
 
 		await self.checkState()
@@ -316,32 +330,33 @@ module.exports = {
 		}, self.RECONNECT_TIME)
 	},
 
+	async refreshSessionToken() {
+		let self = this
+
+		const device = self.DEVICE
+		if (!device || self.TOKEN_REFRESH_IN_FLIGHT) {
+			return
+		}
+
+		self.TOKEN_REFRESH_IN_FLIGHT = true
+
+		try {
+			await device.refreshToken()
+			if (self.config.verbose) {
+				self.log('debug', 'Session token refreshed.')
+			}
+		} catch (error) {
+			await self.handleRequestError(error, 'Session refresh failed')
+		} finally {
+			self.TOKEN_REFRESH_IN_FLIGHT = false
+		}
+	},
+
 	startIntervals: function () {
 		let self = this
 
-		self.TOKEN_INTERVAL = setInterval(async () => {
-			const device = self.DEVICE
-			if (!device || self.TOKEN_REFRESH_IN_FLIGHT) {
-				return
-			}
-
-			self.TOKEN_REFRESH_IN_FLIGHT = true
-
-			try {
-				await device.refreshToken()
-				if (self.config.verbose) {
-					self.log('debug', 'Session token refreshed.')
-				}
-			} catch (error) {
-				if (error.unreachable === true || error.authFailure === true) {
-					await self.handleRequestError(error, 'Session refresh failed')
-					return
-				}
-
-				await self.handleRequestError(error, 'Session refresh failed')
-			} finally {
-				self.TOKEN_REFRESH_IN_FLIGHT = false
-			}
+		self.TOKEN_INTERVAL = setInterval(() => {
+			self.refreshSessionToken().catch((error) => self.log('error', 'Session refresh failed: ' + error.message))
 		}, self.TOKEN_REFRESH_TIME)
 
 		if (self.config.polling) {
@@ -354,8 +369,13 @@ module.exports = {
 			)
 
 			self.log('info', `Starting Update Interval: Fetching new data from Device every ${pollingRate}ms.`)
-			self.INTERVAL = setInterval(self.checkState.bind(self), pollingRate)
-			self.INTERVAL_RESOURCES = setInterval(self.checkSystemInfo.bind(self), pollingRateResources)
+			// Timer callbacks are never awaited, so an escaping rejection would be fatal to the process.
+			self.INTERVAL = setInterval(() => {
+				self.checkState().catch((error) => self.log('error', 'Error polling panel state: ' + error.message))
+			}, pollingRate)
+			self.INTERVAL_RESOURCES = setInterval(() => {
+				self.checkSystemInfo().catch((error) => self.log('error', 'Error polling system info: ' + error.message))
+			}, pollingRateResources)
 		} else {
 			self.log(
 				'info',
@@ -379,6 +399,21 @@ module.exports = {
 		}
 
 		self.STATE_CHECK_IN_FLIGHT = true
+
+		// Published so refreshStateAfterAction() can await the running check instead of polling a flag.
+		const run = self._checkStateOnce(generation, device).finally(() => {
+			self.STATE_CHECK_IN_FLIGHT = false
+			if (self.STATE_CHECK_PROMISE === run) {
+				self.STATE_CHECK_PROMISE = null
+			}
+		})
+		self.STATE_CHECK_PROMISE = run
+
+		return run
+	},
+
+	async _checkStateOnce(generation, device) {
+		let self = this
 
 		try {
 			const panels = await device.queryPanel()
@@ -408,10 +443,10 @@ module.exports = {
 
 				if (detail?.msg) {
 					self.STATE.panel_detail = detail.msg
-					self.STATE.inputs = detail.msg.panel_inputs || []
-					self.STATE.outputs = detail.msg.panel_outputs || []
-					self.STATE.templates = detail.msg.panel_templates || []
-					self.STATE.rotation_lists = detail.msg.rotation_lists || []
+					self.STATE.inputs = asArray(detail.msg.panel_inputs)
+					self.STATE.outputs = asArray(detail.msg.panel_outputs)
+					self.STATE.templates = asArray(detail.msg.panel_templates)
+					self.STATE.rotation_lists = asArray(detail.msg.rotation_lists)
 				}
 
 				self.POLL_ERROR_COUNT = 0
@@ -428,8 +463,6 @@ module.exports = {
 			if (self.POLL_ERROR_COUNT >= self.POLL_ERROR_WARNING_THRESHOLD) {
 				self.updateStatus(InstanceStatus.UnknownWarning, 'Repeated errors polling panel state')
 			}
-		} finally {
-			self.STATE_CHECK_IN_FLIGHT = false
 		}
 
 		if (!self.isConnectionCurrent(generation, device)) {

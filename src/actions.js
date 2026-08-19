@@ -1,6 +1,6 @@
-const { InstanceStatus } = require('@companion-module/base')
+import { InstanceStatus } from '@companion-module/base'
 
-module.exports = {
+export default {
 	initActions: function () {
 		let self = this
 		let actions = {}
@@ -37,7 +37,6 @@ module.exports = {
 				await fn()
 				await self.refreshStateAfterAction()
 			} catch (error) {
-				self.log('error', `Error in action "${description}": ${error.message}`)
 				await self.handleRequestError(error, `Action "${description}" failed`)
 			}
 		}
@@ -508,7 +507,6 @@ module.exports = {
 					self.updateStatus(InstanceStatus.ConnectionFailure, 'Device rebooting')
 					self.startReconnectInterval()
 				} catch (error) {
-					self.log('error', 'Error rebooting device: ' + error.message)
 					await self.handleRequestError(error, 'Error rebooting device')
 				}
 			},
