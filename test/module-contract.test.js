@@ -107,3 +107,35 @@ test('concurrent checkState calls do not overlap, and the in-flight promise is a
 	await first
 	assert.equal(self.STATE_CHECK_PROMISE, null, 'in-flight promise must be cleared once settled')
 })
+
+// The reconnect timer must be armed before the dispose completes. We only reach
+// handleConnectionFailure because the device is unreachable, so logout() inside dispose runs to
+// its full request timeout; awaiting it first would delay the first retry by that much.
+test('handleConnectionFailure arms the reconnect before waiting on dispose', async () => {
+	const self = makeInstance()
+	self.config.host = '10.0.0.1'
+	self.RECONNECT_TIME = 30000
+	self._destroyed = false
+
+	const order = []
+	self.stopIntervals = () => {}
+	self.startReconnectInterval = () => order.push('reconnect-armed')
+
+	let releaseLogout
+	const logoutBlocked = new Promise((resolve) => (releaseLogout = resolve))
+	self.DEVICE = {
+		// stands in for a logout that hangs until its request timeout on a dead device
+		logout: () => logoutBlocked.then(() => order.push('logout-finished')),
+		close: () => order.push('closed'),
+	}
+
+	const pending = self.handleConnectionFailure(new Error('unreachable'), 'Poll failed')
+
+	await new Promise((r) => setImmediate(r))
+	assert.deepEqual(order, ['reconnect-armed'], 'retry must be armed while dispose is still open')
+
+	releaseLogout()
+	await pending
+	assert.deepEqual(order, ['reconnect-armed', 'logout-finished', 'closed'])
+	assert.equal(self.DEVICE, null, 'device reference must be cleared')
+})

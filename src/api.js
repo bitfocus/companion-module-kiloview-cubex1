@@ -134,9 +134,14 @@ export default {
 		self.log('error', `${context}: ${error.message}`)
 		self.updateStatus(InstanceStatus.ConnectionFailure)
 		self.stopIntervals()
-		return self.disposeCurrentDevice().then(() => {
-			self.startReconnectInterval()
-		})
+
+		// Arm the retry before disposing. We only get here because the device is unreachable, so
+		// the logout() inside dispose runs to its full request timeout; waiting on it would push
+		// the first reconnect attempt out by that much. The dispose promise is still returned so
+		// callers keep propagating its errors.
+		self.startReconnectInterval()
+
+		return self.disposeCurrentDevice()
 	},
 
 	handleAuthFailure: function (error, context) {
