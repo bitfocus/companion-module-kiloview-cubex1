@@ -265,17 +265,18 @@ class KiloviewCubeX1 {
 		return error
 	}
 
+	/**
+	 * Auth failures are detected from the HTTP status only.
+	 *
+	 * The CUBE X1 API (v23.11.2) reports business errors as
+	 * `{ result: 'error', error: { code, info } }` where `code` is a device-specific 5-digit
+	 * string (the documented example is "10002" / "User name doesn't exist"). It never carries
+	 * HTTP-style "401"/"403" values, so matching those in `error.code` would be dead code.
+	 * The docs publish no error-code table and do not state which code accompanies an expired
+	 * session, so no code is special-cased here rather than guessing at one.
+	 */
 	_isAuthFailure(result) {
-		if (result?._statusCode === 401 || result?._statusCode === 403) {
-			return true
-		}
-
-		if (result?.result === 'error' && result?.error?.code !== undefined) {
-			const code = String(result.error.code)
-			return code === '401' || code === '403'
-		}
-
-		return false
+		return result?._statusCode === 401 || result?._statusCode === 403
 	}
 
 	_validateResult(result) {
