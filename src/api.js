@@ -325,27 +325,33 @@ export default {
 		}, self.RECONNECT_TIME)
 	},
 
+	async refreshSessionToken() {
+		let self = this
+
+		const device = self.DEVICE
+		if (!device || self.TOKEN_REFRESH_IN_FLIGHT) {
+			return
+		}
+
+		self.TOKEN_REFRESH_IN_FLIGHT = true
+
+		try {
+			await device.refreshToken()
+			if (self.config.verbose) {
+				self.log('debug', 'Session token refreshed.')
+			}
+		} catch (error) {
+			await self.handleRequestError(error, 'Session refresh failed')
+		} finally {
+			self.TOKEN_REFRESH_IN_FLIGHT = false
+		}
+	},
+
 	startIntervals: function () {
 		let self = this
 
-		self.TOKEN_INTERVAL = setInterval(async () => {
-			const device = self.DEVICE
-			if (!device || self.TOKEN_REFRESH_IN_FLIGHT) {
-				return
-			}
-
-			self.TOKEN_REFRESH_IN_FLIGHT = true
-
-			try {
-				await device.refreshToken()
-				if (self.config.verbose) {
-					self.log('debug', 'Session token refreshed.')
-				}
-			} catch (error) {
-				await self.handleRequestError(error, 'Session refresh failed')
-			} finally {
-				self.TOKEN_REFRESH_IN_FLIGHT = false
-			}
+		self.TOKEN_INTERVAL = setInterval(() => {
+			self.refreshSessionToken().catch((error) => self.log('error', 'Session refresh failed: ' + error.message))
 		}, self.TOKEN_REFRESH_TIME)
 
 		if (self.config.polling) {
