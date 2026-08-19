@@ -5,7 +5,7 @@
 	"name": "kiloview-cubex1",
 	"shortname": "CUBE X1",
 	"description": "Module to control the Kiloview CUBE X1 NDI High Bandwidth + NDI|HX Distribution System (matrix routing, playlists, output locking and templates)",
-	"version": "1.0.4",
+	"version": "1.0.5",
 	"license": "MIT",
 	"repository": "git+https://github.com/bitfocus/companion-module-kiloview-cubex1.git",
 	"bugs": "https://github.com/bitfocus/companion-module-kiloview-cubex1/issues",

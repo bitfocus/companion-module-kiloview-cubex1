@@ -1,5 +1,6 @@
 const http = require('http')
 const https = require('https')
+const { isIP } = require('net')
 
 /**
  * HTTP API client for the Kiloview CUBE X1 NDI distribution system.
@@ -71,6 +72,43 @@ class KiloviewCubeX1 {
 		}
 
 		return trimmed
+	}
+
+	/**
+	 * Validates a configured host. Accepts IPv4, IPv6 (bare or bracketed) and DNS hostnames.
+	 *
+	 * Note: do not use `Regex.IP` / `Regex.HOSTNAME` from @companion-module/base here. Those are
+	 * `/pattern/`-delimited *strings* meant for the `regex` property of config input fields, not
+	 * RegExp objects, so calling `.test()` on them throws.
+	 */
+	static isValidHost(host) {
+		if (!host || typeof host !== 'string') {
+			return false
+		}
+
+		const normalized = KiloviewCubeX1.formatHostForUrl(host)
+		if (normalized.startsWith('[') && normalized.endsWith(']')) {
+			return isIP(normalized.slice(1, -1)) === 6
+		}
+
+		if (isIP(normalized) !== 0) {
+			return true
+		}
+
+		// A dotted-numeric string that failed isIP() above is a mistyped address (e.g. "256.1.1.1"
+		// or "192.168.1"), not a hostname. Per RFC 1123 the final label cannot be all digits, so
+		// rejecting it here keeps those from being treated as resolvable names.
+		if (/(^|\.)[0-9]+$/.test(normalized)) {
+			return false
+		}
+
+		// Mirrors Regex.HOSTNAME from @companion-module/base, plus the DNS length limit.
+		return (
+			normalized.length <= 253 &&
+			/^(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9])\.)*([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9])$/.test(
+				normalized,
+			)
+		)
 	}
 
 	_verboseLog(message) {

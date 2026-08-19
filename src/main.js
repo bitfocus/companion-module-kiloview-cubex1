@@ -1,5 +1,5 @@
 // Kiloview CUBE X1
-const { InstanceBase, InstanceStatus, Regex } = require('@companion-module/base')
+const { InstanceBase, InstanceStatus } = require('@companion-module/base')
 const upgrades = require('./upgrades')
 
 const KiloviewCubeX1 = require('./cubex1')
@@ -75,16 +75,7 @@ class KiloviewX1Instance extends InstanceBase {
 	}
 
 	isValidHost(host) {
-		if (!host || typeof host !== 'string') {
-			return false
-		}
-
-		const normalized = this.normalizeHost(host)
-		if (normalized.startsWith('[') && normalized.endsWith(']')) {
-			return /^[0-9a-fA-F:]+$/.test(normalized.slice(1, -1))
-		}
-
-		return Regex.IP.test(normalized) || Regex.HOSTNAME.test(normalized)
+		return KiloviewCubeX1.isValidHost(host)
 	}
 
 	normalizeConfig(config) {
