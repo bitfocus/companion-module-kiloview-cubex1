@@ -1,4 +1,4 @@
-module.exports = {
+export default {
 	getConfigFields() {
 		let self = this
 

@@ -20,7 +20,7 @@ function formatUptime(uptime) {
 	return `${hoursStr}:${minutesStr}:${secondsStr}`
 }
 
-module.exports = {
+export default {
 	initVariables() {
 		let self = this
 		let variables = {}

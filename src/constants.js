@@ -28,7 +28,7 @@ function createDefaultChoiceSets() {
 	}
 }
 
-module.exports = {
+export default {
 	POLLINGRATE: 1000,
 	POLLINGRATE_MAX: 60000,
 	POLLINGRATE_RESOURCES: 10000,

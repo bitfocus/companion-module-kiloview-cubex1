@@ -1,4 +1,4 @@
-module.exports = [
+export default [
 	function migratePasswordToSecrets(_context, props) {
 		const result = {
 			updatedConfig: null,

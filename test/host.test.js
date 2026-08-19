@@ -1,7 +1,8 @@
-const test = require('node:test')
-const assert = require('node:assert/strict')
+import test from 'node:test'
+import assert from 'node:assert/strict'
 
-const KiloviewCubeX1 = require('../src/cubex1')
+import KiloviewCubeX1 from '../src/cubex1.js'
+import { Regex } from '@companion-module/base'
 
 test('formatHostForUrl brackets bare IPv6 and leaves everything else alone', () => {
 	assert.equal(KiloviewCubeX1.formatHostForUrl('192.168.1.10'), '192.168.1.10')
@@ -63,7 +64,6 @@ test('isValidHost rejects non-string input without throwing', () => {
 // the whole module down during init in 1.0.4.
 test('issue #1: validating a host does not throw', () => {
 	assert.doesNotThrow(() => KiloviewCubeX1.isValidHost('192.168.1.10'))
-	const { Regex } = require('@companion-module/base')
 	assert.equal(typeof Regex.IP, 'string')
 	assert.equal(typeof Regex.HOSTNAME, 'string')
 })

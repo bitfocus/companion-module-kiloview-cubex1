@@ -1,6 +1,6 @@
-const http = require('http')
-const https = require('https')
-const { isIP } = require('net')
+import http from 'node:http'
+import https from 'node:https'
+import { isIP } from 'node:net'
 
 /**
  * HTTP API client for the Kiloview CUBE X1 NDI distribution system.
@@ -168,7 +168,8 @@ class KiloviewCubeX1 {
 			this._verboseLog(`HTTP ${method} ${options.path}`)
 
 			const req = (isHttps ? https : http).request(options, (res) => {
-				let resBody = ''
+				const chunks = []
+				let bodyBytes = 0
 				let bodyTooLarge = false
 				const finish = () => {
 					this._activeRequests.delete(req)
@@ -179,11 +180,15 @@ class KiloviewCubeX1 {
 						return
 					}
 
-					resBody += chunk
-					if (resBody.length > this.maxBodyBytes) {
+					// Count bytes, not decoded characters, so the cap holds for multi-byte responses.
+					bodyBytes += chunk.length
+					if (bodyBytes > this.maxBodyBytes) {
 						bodyTooLarge = true
 						req.destroy(new Error('Response body too large'))
+						return
 					}
+
+					chunks.push(chunk)
 				})
 				res.on('error', (err) => {
 					finish()
@@ -200,6 +205,7 @@ class KiloviewCubeX1 {
 
 					this._verboseLog(`HTTP ${method} ${options.path} -> ${res.statusCode}`)
 
+					const resBody = Buffer.concat(chunks).toString('utf8')
 					try {
 						const parsed = JSON.parse(resBody)
 						if (typeof parsed === 'object' && parsed !== null) {
@@ -266,7 +272,7 @@ class KiloviewCubeX1 {
 
 		if (result?.result === 'error' && result?.error?.code !== undefined) {
 			const code = String(result.error.code)
-			return code === '401' || code === '403' || code.startsWith('401') || code.startsWith('403')
+			return code === '401' || code === '403'
 		}
 
 		return false
@@ -363,10 +369,7 @@ class KiloviewCubeX1 {
 				return true
 			}
 
-			if (this._isAuthFailure(result)) {
-				return await this._loginImpl()
-			}
-
+			// Anything else (including an expired session) is recovered by logging in again.
 			return await this._loginImpl()
 		})
 	}
@@ -416,22 +419,6 @@ class KiloviewCubeX1 {
 
 	async reboot() {
 		return await this.authPost('/server/reboot', {})
-	}
-
-	async restoreFactorySettings() {
-		return await this.authPost('/server/restore', {})
-	}
-
-	async queryAllInputSources() {
-		return await this.authGet('/resource/queryAllInputSrc')
-	}
-
-	async queryAllRotationLists() {
-		return await this.authGet('/resource/queryAllRotationList')
-	}
-
-	async queryRotationList(rotation_list_id) {
-		return await this.authGet('/resource/queryRotationList', { rotation_list_id })
 	}
 
 	async queryPanel() {
@@ -530,4 +517,4 @@ class KiloviewCubeX1 {
 	}
 }
 
-module.exports = KiloviewCubeX1
+export default KiloviewCubeX1
